@@ -1,381 +1,787 @@
 // ─── GameScene ──────────────────────────────────────────────────────────────
-// Main TV gameplay display: discard pile, draw pile, player panels, direction
-// arrow, current color glow, active player highlight, animations.
+// Main TV gameplay display: avatars, deal/play animations, orbiting direction
+// indicator, card-back fan display, enhanced active player glow, sounds.
 
 import Phaser from 'phaser';
 import socket from '../socket.js';
-import { drawCard, drawCardBack, getColorHex, COLOR_MAP } from '../CardGraphics.js';
+import { drawCard, drawCardBack, getColorHex, COLOR_MAP, COLOR_HEX_STR } from '../CardGraphics.js';
+
+// ── Avatar emoji map ──
+const AVATAR_EMOJI = {
+  cat: '🐱', dog: '🐶', fox: '🦊', owl: '🦉', bear: '🐻',
+  rabbit: '🐰', panda: '🐼', koala: '🐨', lion: '🦁', penguin: '🐧',
+};
+
+// ── Programmatic Web Audio sounds ──
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+function playTone(freq, dur, type = 'sine', vol = 0.12) {
+  try {
+    const ctx = getAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type; osc.frequency.value = freq;
+    gain.gain.setValueAtTime(vol, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + dur);
+  } catch (_) {}
+}
+function playDealSound() { playTone(1200, 0.06, 'square', 0.08); }
+function playCardPlaySound() { playTone(600, 0.1, 'triangle', 0.15); }
+function playDrawSound() { playTone(300, 0.15, 'sawtooth', 0.08); }
+function playUnoSound() {
+  playTone(523, 0.12, 'square', 0.18);
+  setTimeout(() => playTone(659, 0.12, 'square', 0.18), 130);
+  setTimeout(() => playTone(784, 0.2, 'square', 0.22), 260);
+}
+function playReverseSound() { playTone(400, 0.1, 'sine', 0.12); setTimeout(() => playTone(500, 0.15, 'sine', 0.12), 120); }
+function playSkipSound() { playTone(200, 0.2, 'sawtooth', 0.1); }
+function playPenaltySound() { playTone(200, 0.3, 'square', 0.15); setTimeout(() => playTone(150, 0.3, 'square', 0.15), 300); }
+
+const W = 1920;
+const H = 1080;
+const CX = W / 2;
+const CY = H / 2;
+const TABLE_RX = 500;   // table ellipse half-width
+const TABLE_RY = 300;   // table ellipse half-height
+const ORBIT_RX = 520;   // orbit ring slightly outside table
+const ORBIT_RY = 318;
+const PLAYER_RX = 720;  // player positions radius
+const PLAYER_RY = 430;
 
 export class GameScene extends Phaser.Scene {
-    constructor() {
-        super({ key: 'GameScene' });
-        this.state = null;
-        this.playerPanels = [];
-        this.discardContainer = null;
-        this.drawPileContainer = null;
-        this.directionArrow = null;
-        this.colorGlow = null;
-        this.messageText = null;
+  constructor() {
+    super({ key: 'GameScene' });
+    this.state = null;
+    this.playerPanels = [];
+    this.discardStack = [];
+    this._dealing = false;
+    this._lastTopCardId = null;
+    this._orbitAngle = 0;
+    this._orbitDir = 1;
+    this._currentDir = 1;
+    this._initialPlayers = null;
+    this._disconnectTexts = [];
+    this._roomCode = null;
+  }
+
+  init(data) {
+    this.firstCard = data?.firstCard;
+    this.firstEffects = data?.effects;
+    this.dealSequence = data?.dealSequence || [];
+    this._initialPlayers = data?.players || [];
+    this._roomCode = data?.roomCode || null;
+  }
+
+  create() {
+    // ── Background with subtle ambient particles ──
+    const bg = this.add.graphics();
+    bg.fillGradientStyle(0x0a1628, 0x0a1628, 0x1a0a2e, 0x1a0a2e, 1);
+    bg.fillRect(0, 0, W, H);
+    // Subtle stars / sparkles
+    for (let i = 0; i < 40; i++) {
+      bg.fillStyle(0xffffff, Phaser.Math.FloatBetween(0.015, 0.06));
+      bg.fillCircle(Phaser.Math.Between(0, W), Phaser.Math.Between(0, H), Phaser.Math.Between(1, 3));
     }
 
-    init(data) {
-        this.firstCard = data?.firstCard;
-        this.firstEffects = data?.effects;
+    // ── Table: 3D look with shadow, rim, gold trim ──
+    // Shadow
+    const shadow = this.add.graphics();
+    shadow.fillStyle(0x000000, 0.35);
+    shadow.fillEllipse(CX, CY + 14, TABLE_RX * 2 + 50, TABLE_RY * 2 + 50);
+    // Wooden rim
+    const rim = this.add.graphics();
+    rim.fillStyle(0x4e342e, 1);
+    rim.fillEllipse(CX, CY, TABLE_RX * 2 + 34, TABLE_RY * 2 + 34);
+    rim.lineStyle(3, 0x795548, 0.8);
+    rim.strokeEllipse(CX, CY, TABLE_RX * 2 + 34, TABLE_RY * 2 + 34);
+    // Gold trim
+    const gold = this.add.graphics();
+    gold.lineStyle(3, 0xd4af37, 0.6);
+    gold.strokeEllipse(CX, CY, TABLE_RX * 2 + 18, TABLE_RY * 2 + 18);
+    // Felt — multi-layer gradient for depth
+    const felt = this.add.graphics();
+    felt.fillStyle(0x0d4a24, 1);
+    felt.fillEllipse(CX, CY, TABLE_RX * 2, TABLE_RY * 2);
+    felt.fillStyle(0x156b35, 0.6);
+    felt.fillEllipse(CX, CY, TABLE_RX * 1.6, TABLE_RY * 1.6);
+    felt.fillStyle(0x1e8449, 0.35);
+    felt.fillEllipse(CX, CY, TABLE_RX * 1.1, TABLE_RY * 1.1);
+    // Inner border ring
+    felt.lineStyle(2, 0x2ecc71, 0.25);
+    felt.strokeEllipse(CX, CY, TABLE_RX * 2 - 12, TABLE_RY * 2 - 12);
+    felt.lineStyle(1, 0x27ae60, 0.12);
+    felt.strokeEllipse(CX, CY, TABLE_RX * 2 - 30, TABLE_RY * 2 - 30);
+
+    // ── Room code at top ──
+    if (this._roomCode) {
+      this.add.text(CX, 28, `ROOM: ${this._roomCode}`, {
+        fontFamily: 'Courier New, monospace', fontSize: '28px',
+        color: '#f1c40f', fontStyle: 'bold',
+        stroke: '#000', strokeThickness: 2,
+      }).setOrigin(0.5).setAlpha(0.8);
     }
 
-    create() {
-        const W = 1920;
-        const H = 1080;
-        const cx = W / 2;
-        const cy = H / 2;
+    // ── Color glow ring behind discard ──
+    this.colorGlow = this.add.graphics();
+    this._drawColorGlow(0x27ae60);
 
-        // Background
-        const bg = this.add.graphics();
-        bg.fillGradientStyle(0x0f3460, 0x0f3460, 0x16213e, 0x16213e, 1);
-        bg.fillRect(0, 0, W, H);
+    // ── Discard pile layer ──
+    this.discardGroup = this.add.container(CX - 60, CY);
 
-        // Table felt (oval)
-        const felt = this.add.graphics();
-        felt.fillStyle(0x1a5c3a, 1);
-        felt.fillEllipse(cx, cy, 1000, 600);
-        felt.lineStyle(4, 0x2ecc71, 0.6);
-        felt.strokeEllipse(cx, cy, 1000, 600);
+    // ── Draw pile area ──
+    this.drawPileGroup = this.add.container(CX + 120, CY);
+    for (let i = 2; i >= 0; i--) {
+      const back = drawCardBack(this, i * 2, -i * 2, 1.05);
+      this.drawPileGroup.add(back);
+    }
+    this.add.text(CX + 120, CY + 90, 'DRAW', {
+      fontFamily: 'Arial Black', fontSize: '16px', color: '#888',
+    }).setOrigin(0.5);
+    this.drawCountText = this.add.text(CX + 120, CY - 90, '', {
+      fontFamily: 'Arial Black', fontSize: '20px', color: '#f1c40f',
+    }).setOrigin(0.5);
 
-        // Color glow ring behind discard
-        this.colorGlow = this.add.graphics();
-        this._drawColorGlow(0x2ecc71);
+    // ── +2 Stack indicator ──
+    this.stackText = this.add.text(CX - 60, CY + 110, '', {
+      fontFamily: 'Arial Black', fontSize: '28px', color: '#e74c3c',
+      stroke: '#000', strokeThickness: 3,
+    }).setOrigin(0.5).setAlpha(0);
 
-        // Discard pile area
-        this.discardGroup = this.add.container(cx - 60, cy);
+    // ── Current color indicator ──
+    this.colorIndicator = this.add.container(CX - 60, CY + 150);
+    this.colorDot = this.add.graphics();
+    this.colorIndicator.add(this.colorDot);
+    this.colorText = this.add.text(22, 0, '', {
+      fontFamily: 'Arial Black', fontSize: '18px', color: '#fff',
+    }).setOrigin(0, 0.5);
+    this.colorIndicator.add(this.colorText);
 
-        // Draw pile area
-        this.drawPileGroup = this.add.container(cx + 120, cy);
-        const backCard = drawCardBack(this, 0, 0, 1.1);
-        this.drawPileGroup.add(backCard);
-        const drawLabel = this.add.text(cx + 120, cy + 90, 'DRAW', {
-            fontFamily: 'Arial Black', fontSize: '18px', color: '#aaa',
-        }).setOrigin(0.5);
+    // ══════════════════════════════════════════════════════════════
+    // DIRECTION ORBIT — continuous orbiting dot around the table
+    // ══════════════════════════════════════════════════════════════
+    this.orbitGfx = this.add.graphics();
+    this.orbitTrailGfx = this.add.graphics();
+    this._orbitAngle = 0;
+    this._orbitDir = 1;
 
-        // Draw pile count
-        this.drawCountText = this.add.text(cx + 120, cy - 90, '', {
-            fontFamily: 'Arial Black', fontSize: '20px', color: '#f1c40f',
-        }).setOrigin(0.5);
+    // ── Player panels container ──
+    this.panelsContainer = this.add.container(0, 0);
 
-        // Direction arrow
-        this.directionText = this.add.text(cx, cy - 200, '→ Clockwise', {
-            fontFamily: 'Arial, sans-serif',
-            fontSize: '28px',
-            color: '#2ecc71',
+    // ── Message overlay ──
+    this.messageText = this.add.text(CX, 80, '', {
+      fontFamily: 'Arial Black', fontSize: '40px', color: '#e94560',
+      stroke: '#000', strokeThickness: 4,
+    }).setOrigin(0.5).setAlpha(0);
+
+    // ── UNO call overlay ──
+    this.unoCallText = this.add.text(CX, CY, '', {
+      fontFamily: 'Arial Black', fontSize: '72px', color: '#f1c40f',
+      stroke: '#e74c3c', strokeThickness: 6,
+    }).setOrigin(0.5).setAlpha(0).setDepth(100);
+
+    // ══════════════════════════════════════════════════════════════
+    // RENDER INITIAL PLAYERS before deal animation — FIX #3
+    // ══════════════════════════════════════════════════════════════
+    if (this._initialPlayers.length > 0) {
+      // Build a temporary state so players are visible immediately
+      this.state = {
+        players: this._initialPlayers,
+        currentPlayerId: this._initialPlayers[0]?.id,
+        direction: 1,
+        topCard: null,
+        drawPileCount: 0,
+        currentColor: null,
+        drawStack: 0,
+      };
+      this._renderPlayers(this._initialPlayers, this._initialPlayers[0]?.id);
+    }
+
+    // ── Socket listeners ──
+    socket.on('state_update', (state) => {
+      if (!this._dealing) this._onStateUpdate(state);
+      else this._pendingState = state;
+    });
+    socket.on('card_effect', (effect) => this._onCardEffect(effect));
+    socket.on('challenge_result', (data) => {
+      const msg = data.effect === 'challenge_success'
+        ? `Challenge SUCCESS! Offender draws ${data.drew}`
+        : data.effect === 'challenge_fail'
+          ? `Challenge FAILED! Challenger draws ${data.drew}`
+          : `Challenge declined. Draws ${data.drew}`;
+      this._showMessage(msg);
+    });
+    socket.on('uno_event', (data) => {
+      if (data.effect === 'uno_said') {
+        this._showUnoCall(data.playerName || 'Player');
+        playUnoSound();
+      }
+    });
+    socket.on('uno_penalty', () => {
+      this._showMessage('UNO Penalty! +1 card');
+      playPenaltySound();
+    });
+    socket.on('round_over', (data) => this.scene.start('RoundOverScene', data));
+    socket.on('game_over', (data) => this.scene.start('GameOverScene', data));
+
+    // ── Draw event animation ──
+    socket.on('draw_event', (data) => this._animateDrawEvent(data));
+
+    // ── Run deal animation (FIX #2: 100ms per card) ──
+    if (this.dealSequence.length > 0) {
+      this._playDealAnimation();
+    }
+  }
+
+  // Phaser update loop — drive the orbiting direction indicator + countdown
+  update(time, delta) {
+    this._updateOrbit(delta);
+    // Update disconnect countdowns
+    if (this._disconnectTexts) {
+      for (const dt of this._disconnectTexts) {
+        const remaining = Math.max(0, Math.ceil(120 - (Date.now() - dt.disconnectTime) / 1000));
+        dt.text.setText(`⏳ ${remaining}s`);
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // ORBITING DIRECTION INDICATOR — FIX #4
+  // A glowing dot that continuously circles the table ellipse
+  // ══════════════════════════════════════════════════════════════════
+
+  _updateOrbit(delta) {
+    const speed = 0.0012; // radians per ms
+    this._orbitAngle += speed * delta * this._orbitDir;
+
+    // Wrap
+    if (this._orbitAngle > Math.PI * 2) this._orbitAngle -= Math.PI * 2;
+    if (this._orbitAngle < -Math.PI * 2) this._orbitAngle += Math.PI * 2;
+
+    const dotX = CX + Math.cos(this._orbitAngle) * ORBIT_RX;
+    const dotY = CY + Math.sin(this._orbitAngle) * ORBIT_RY;
+
+    // Trail — 5 fading dots behind the main dot
+    this.orbitTrailGfx.clear();
+    for (let i = 1; i <= 5; i++) {
+      const trailAngle = this._orbitAngle - i * 0.08 * this._orbitDir;
+      const tx = CX + Math.cos(trailAngle) * ORBIT_RX;
+      const ty = CY + Math.sin(trailAngle) * ORBIT_RY;
+      const alpha = 0.3 - i * 0.05;
+      const radius = 7 - i * 0.8;
+      this.orbitTrailGfx.fillStyle(0x2ecc71, Math.max(alpha, 0.02));
+      this.orbitTrailGfx.fillCircle(tx, ty, Math.max(radius, 2));
+    }
+
+    // Main dot
+    this.orbitGfx.clear();
+    // Outer glow
+    this.orbitGfx.fillStyle(0x2ecc71, 0.15);
+    this.orbitGfx.fillCircle(dotX, dotY, 18);
+    // Inner glow
+    this.orbitGfx.fillStyle(0x2ecc71, 0.4);
+    this.orbitGfx.fillCircle(dotX, dotY, 10);
+    // Core dot
+    this.orbitGfx.fillStyle(0xffffff, 0.9);
+    this.orbitGfx.fillCircle(dotX, dotY, 5);
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // DEAL ANIMATION — FIX #2: 300ms per card
+  // ══════════════════════════════════════════════════════════════════
+
+  _playDealAnimation() {
+    this._dealing = true;
+    const seq = this.dealSequence;
+    const deckX = CX + 120;
+    const deckY = CY;
+    let idx = 0;
+
+    const dealNext = () => {
+      if (idx >= seq.length) {
+        // Deal done — animate first card onto discard pile
+        this.time.delayedCall(400, () => {
+          if (this.firstCard) this._animateFirstCard();
+          this.time.delayedCall(600, () => {
+            this._dealing = false;
+            if (this._pendingState) {
+              this._onStateUpdate(this._pendingState);
+              this._pendingState = null;
+            }
+          });
+        });
+        return;
+      }
+
+      const entry = seq[idx];
+      idx++;
+
+      // Create a card back at deck position
+      const cardBack = drawCardBack(this, deckX, deckY, 0.8);
+      cardBack.setDepth(50);
+
+      // Target position — find player panel position
+      const playerPos = this._getPlayerPanelPos(entry.playerId);
+      if (!playerPos) {
+        cardBack.destroy();
+        this.time.delayedCall(100, dealNext);
+        return;
+      }
+
+      playDealSound();
+
+      this.tweens.add({
+        targets: cardBack,
+        x: playerPos.x,
+        y: playerPos.y + 40,  // aim at card fan area below panel
+        scaleX: 0.4,
+        scaleY: 0.4,
+        alpha: 0,
+        duration: 250,
+        ease: 'Quad.easeOut',
+        onComplete: () => {
+          cardBack.destroy();
+        },
+      });
+
+      // Schedule next card at 300ms interval
+      this.time.delayedCall(300, dealNext);
+    };
+
+    // Start after a short delay so players can see the table
+    this.time.delayedCall(500, dealNext);
+  }
+
+  _animateFirstCard() {
+    if (!this.firstCard) return;
+    const card = drawCard(this, CX + 120, CY, this.firstCard, 1.3);
+    card.setDepth(60);
+    card.setScale(0);
+    card.setAlpha(0);
+
+    playCardPlaySound();
+
+    this.tweens.add({
+      targets: card,
+      x: CX - 60,
+      y: CY,
+      scaleX: 1, scaleY: 1,
+      alpha: 1,
+      duration: 500,
+      ease: 'Back.easeOut',
+      onComplete: () => {
+        card.destroy();
+      },
+    });
+  }
+
+  _getPlayerPanelPos(playerId) {
+    if (!this.state) return null;
+    const idx = this.state.players.findIndex(p => p.id === playerId);
+    if (idx === -1) return null;
+    const positions = this._getPlayerPositions(this.state.players.length);
+    return positions[idx] || null;
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // STATE UPDATE
+  // ══════════════════════════════════════════════════════════════════
+
+  _onStateUpdate(state) {
+    const prevTopId = this._lastTopCardId;
+    this.state = state;
+    if (state.roomCode && !this._roomCode) this._roomCode = state.roomCode;
+
+    // Update orbit direction
+    if (state.direction !== this._currentDir) {
+      this._currentDir = state.direction;
+      this._orbitDir = state.direction;
+      playReverseSound();
+    }
+
+    this._renderDiscard(state.topCard, prevTopId);
+    this._renderColorGlow(state.currentColor);
+    this._renderPlayers(state.players, state.currentPlayerId);
+    this._renderDrawCount(state.drawPileCount);
+    this._renderColorLabel(state.currentColor);
+    this._renderDrawStack(state.drawStack);
+    this._lastTopCardId = state.topCard?.id || null;
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // DISCARD PILE with stacking
+  // ══════════════════════════════════════════════════════════════════
+
+  _renderDiscard(topCard, prevTopId) {
+    if (!topCard) return;
+    if (topCard.id === prevTopId) return;
+
+    if (this.discardStack.length > 3) {
+      const oldest = this.discardStack.shift();
+      if (oldest) oldest.destroy();
+    }
+    for (const child of this.discardStack) child.setAlpha(0.5);
+
+    const offX = Phaser.Math.Between(-4, 4);
+    const offY = Phaser.Math.Between(-4, 4);
+    const rot = Phaser.Math.Between(-6, 6);
+
+    const card = drawCard(this, offX, offY, topCard, 1.3);
+    card.setAngle(rot);
+    this.discardGroup.add(card);
+    this.discardStack.push(card);
+
+    card.setScale(0.3);
+    card.setAlpha(0);
+    playCardPlaySound();
+    this.tweens.add({
+      targets: card,
+      scaleX: 1, scaleY: 1, alpha: 1,
+      duration: 300,
+      ease: 'Back.easeOut',
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // COLOR GLOW
+  // ══════════════════════════════════════════════════════════════════
+
+  _drawColorGlow(colorHex) {
+    this.colorGlow.clear();
+    this.colorGlow.fillStyle(colorHex, 0.12);
+    this.colorGlow.fillCircle(CX - 60, CY, 140);
+    this.colorGlow.lineStyle(3, colorHex, 0.5);
+    this.colorGlow.strokeCircle(CX - 60, CY, 140);
+    this.colorGlow.lineStyle(1, colorHex, 0.2);
+    this.colorGlow.strokeCircle(CX - 60, CY, 160);
+  }
+  _renderColorGlow(colorName) {
+    const hex = getColorHex(colorName);
+    this._drawColorGlow(hex);
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // PLAYER PANELS — FIX #5 (enhanced glow) + FIX #6 (card back fan)
+  // ══════════════════════════════════════════════════════════════════
+
+  _renderPlayers(players, currentPlayerId) {
+    this.panelsContainer.removeAll(true);
+    this.playerPanels = [];
+    this._disconnectTexts = [];
+
+    const n = players.length;
+    const positions = this._getPlayerPositions(n);
+
+    players.forEach((p, i) => {
+      const pos = positions[i];
+      const isCurrent = p.id === currentPlayerId;
+
+      // ── Active player gets a LARGER panel ── FIX #5
+      const BASE_W = 220;
+      const BASE_H = 100;
+      const scale = isCurrent ? 1.15 : 1;
+      const panelW = BASE_W * scale;
+      const panelH = BASE_H * scale;
+
+      const panel = this.add.graphics();
+
+      if (isCurrent) {
+        // ── Outer glow halos ── FIX #5
+        panel.fillStyle(0xe94560, 0.06);
+        panel.fillRoundedRect(pos.x - panelW / 2 - 18, pos.y - panelH / 2 - 18, panelW + 36, panelH + 36, 22);
+        panel.fillStyle(0xe94560, 0.12);
+        panel.fillRoundedRect(pos.x - panelW / 2 - 10, pos.y - panelH / 2 - 10, panelW + 20, panelH + 20, 18);
+
+        // Panel body
+        panel.fillStyle(0x1a1a2e, 0.95);
+        panel.fillRoundedRect(pos.x - panelW / 2, pos.y - panelH / 2, panelW, panelH, 14);
+        panel.lineStyle(3, 0xe94560, 1);
+        panel.strokeRoundedRect(pos.x - panelW / 2, pos.y - panelH / 2, panelW, panelH, 14);
+      } else {
+        panel.fillStyle(0x1a1a2e, 0.8);
+        panel.fillRoundedRect(pos.x - panelW / 2, pos.y - panelH / 2, panelW, panelH, 12);
+        panel.lineStyle(2, 0x333366, 0.6);
+        panel.strokeRoundedRect(pos.x - panelW / 2, pos.y - panelH / 2, panelW, panelH, 12);
+      }
+      this.panelsContainer.add(panel);
+
+      // ── Avatar emoji ──
+      const emoji = AVATAR_EMOJI[p.avatar] || '🎮';
+      const avatarSize = isCurrent ? '38px' : '32px';
+      const avatarText = this.add.text(pos.x - panelW / 2 + 30 * scale, pos.y - 6, emoji, {
+        fontSize: avatarSize,
+      }).setOrigin(0.5);
+      this.panelsContainer.add(avatarText);
+
+      // ── Player name ──
+      const nameColor = isCurrent ? '#ff6b8a' : '#e0e0e0';
+      const nameSize = isCurrent ? '22px' : '18px';
+      const nameText = this.add.text(pos.x + 12 * scale, pos.y - 18 * scale, p.name, {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: nameSize,
+        color: nameColor,
+        fontStyle: 'bold',
+      }).setOrigin(0.5);
+      this.panelsContainer.add(nameText);
+
+      // ── Score ──
+      const scoreText = this.add.text(pos.x + 12 * scale, pos.y + 6 * scale, `${p.score} pts`, {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '14px',
+        color: '#aaa',
+      }).setOrigin(0.5);
+      this.panelsContainer.add(scoreText);
+
+      // ══════════════════════════════════════════════════════════
+      // CARD BACK FAN DISPLAY — FIX #6
+      // Show mini card backs fanned out below the player panel
+      // ══════════════════════════════════════════════════════════
+      const cardCount = p.cardCount || 0;
+      if (cardCount > 0) {
+        const fanContainer = this.add.container(pos.x, pos.y + panelH / 2 + 28);
+        const maxVisible = Math.min(cardCount, 12); // cap at 12 visible cards
+        const fanSpread = Math.min(maxVisible * 10, 100); // total width of fan
+        const cardScale = 0.32;
+
+        for (let c = 0; c < maxVisible; c++) {
+          const progress = maxVisible === 1 ? 0.5 : c / (maxVisible - 1);
+          const xOff = (progress - 0.5) * fanSpread;
+          const angle = (progress - 0.5) * 30; // ±15 degrees
+
+          const miniBack = drawCardBack(this, xOff, 0, cardScale);
+          miniBack.setAngle(angle);
+          fanContainer.add(miniBack);
+        }
+
+        // If more cards than visible, show count badge
+        if (cardCount > maxVisible) {
+          const badge = this.add.text(fanSpread / 2 + 16, -6, `+${cardCount - maxVisible}`, {
+            fontFamily: 'Arial', fontSize: '12px', color: '#f1c40f',
             fontStyle: 'bold',
+          }).setOrigin(0.5);
+          fanContainer.add(badge);
+        }
+
+        this.panelsContainer.add(fanContainer);
+      }
+
+      // ── UNO badge ──
+      if (p.cardCount === 1 && p.saidUno) {
+        const unoBadge = this.add.text(pos.x + panelW / 2 - 5, pos.y - panelH / 2 - 8, 'UNO!', {
+          fontFamily: 'Arial Black', fontSize: '18px', color: '#f1c40f',
+          stroke: '#e74c3c', strokeThickness: 3,
         }).setOrigin(0.5);
+        this.panelsContainer.add(unoBadge);
+        this.tweens.add({
+          targets: unoBadge,
+          scaleX: 1.2, scaleY: 1.2,
+          yoyo: true, repeat: -1, duration: 350,
+        });
+      }
 
-        // Current color indicator
-        this.colorLabel = this.add.text(cx, cy + 180, '', {
-            fontFamily: 'Arial Black', fontSize: '24px', color: '#fff',
+      // ── Disconnected overlay with countdown ──
+      if (!p.connected) {
+        const dcOverlay = this.add.graphics();
+        dcOverlay.fillStyle(0x000000, 0.6);
+        dcOverlay.fillRoundedRect(pos.x - panelW / 2, pos.y - panelH / 2, panelW, panelH, 12);
+        this.panelsContainer.add(dcOverlay);
+        const dcLabel = this.add.text(pos.x, pos.y - 10, 'Disconnected', {
+          fontFamily: 'Arial', fontSize: '13px', color: '#e74c3c', fontStyle: 'bold',
         }).setOrigin(0.5);
-
-        // Player panels container
-        this.panelsContainer = this.add.container(0, 0);
-
-        // Message overlay (for effects)
-        this.messageText = this.add.text(cx, 80, '', {
-            fontFamily: 'Arial Black', fontSize: '36px', color: '#e94560',
-        }).setOrigin(0.5).setAlpha(0);
-
-        // Confetti emitter (for wins)
-        this.confettiParticles = null;
-
-        // ── Socket listeners ──
-        socket.on('state_update', (state) => this._onStateUpdate(state));
-
-        socket.on('card_effect', (effect) => this._onCardEffect(effect));
-
-        socket.on('challenge_result', (data) => {
-            const msg = data.effect === 'challenge_success'
-                ? `Challenge SUCCESS! Offender draws ${data.drew}`
-                : data.effect === 'challenge_fail'
-                    ? `Challenge FAILED! Challenger draws ${data.drew}`
-                    : `Challenge declined. Draws ${data.drew}`;
-            this._showMessage(msg);
-        });
-
-        socket.on('uno_event', (data) => {
-            if (data.effect === 'uno_said') {
-                this._showMessage('UNO! 🎉');
-            } else if (data.effect === 'uno_catch') {
-                this._showMessage('Caught! +2 penalty 🚨');
-            }
-        });
-
-        socket.on('round_over', (data) => {
-            this.scene.start('RoundOverScene', data);
-        });
-
-        socket.on('game_over', (data) => {
-            this.scene.start('GameOverScene', data);
-        });
-    }
-
-    _onStateUpdate(state) {
-        this.state = state;
-        this._renderDiscard(state.topCard);
-        this._renderColorGlow(state.currentColor);
-        this._renderDirection(state.direction);
-        this._renderPlayers(state.players, state.currentPlayerId);
-        this._renderDrawCount(state.drawPileCount);
-        this._renderColorLabel(state.currentColor);
-    }
-
-    _renderDiscard(topCard) {
-        if (!topCard) return;
-        this.discardGroup.removeAll(true);
-        const card = drawCard(this, 0, 0, topCard, 1.3);
-        this.discardGroup.add(card);
-
-        // Animate card placement
-        card.setScale(0.3);
-        card.setAlpha(0);
-        this.tweens.add({
-            targets: card,
-            scaleX: 1, scaleY: 1,
-            alpha: 1,
-            duration: 300,
-            ease: 'Back.easeOut',
-        });
-    }
-
-    _drawColorGlow(colorHex) {
-        this.colorGlow.clear();
-        this.colorGlow.fillStyle(colorHex, 0.15);
-        this.colorGlow.fillCircle(1920 / 2 - 60, 1080 / 2, 130);
-        this.colorGlow.lineStyle(4, colorHex, 0.5);
-        this.colorGlow.strokeCircle(1920 / 2 - 60, 1080 / 2, 130);
-    }
-
-    _renderColorGlow(colorName) {
-        const hex = getColorHex(colorName);
-        this._drawColorGlow(hex);
-    }
-
-    _renderDirection(dir) {
-        this.directionText.setText(dir === 1 ? '→ Clockwise' : '← Counter-Clockwise');
-
-        // Spin animation on reverse
-        this.tweens.add({
-            targets: this.directionText,
-            angle: { from: dir === 1 ? -360 : 360, to: 0 },
-            duration: 600,
-            ease: 'Cubic.easeOut',
-        });
-    }
-
-    _renderPlayers(players, currentPlayerId) {
-        this.panelsContainer.removeAll(true);
-        this.playerPanels = [];
-
-        const n = players.length;
-        const W = 1920;
-        const H = 1080;
-        const cx = W / 2;
-
-        // Arrange players around the table
-        const positions = this._getPlayerPositions(n);
-
-        players.forEach((p, i) => {
-            const pos = positions[i];
-            const isCurrent = p.id === currentPlayerId;
-
-            // Panel background
-            const panel = this.add.graphics();
-            const panelW = 200;
-            const panelH = 80;
-
-            if (isCurrent) {
-                panel.fillStyle(0xe94560, 0.3);
-                panel.lineStyle(3, 0xe94560, 1);
-            } else {
-                panel.fillStyle(0x1a1a2e, 0.7);
-                panel.lineStyle(2, 0x333366, 0.8);
-            }
-            panel.fillRoundedRect(pos.x - panelW / 2, pos.y - panelH / 2, panelW, panelH, 12);
-            panel.strokeRoundedRect(pos.x - panelW / 2, pos.y - panelH / 2, panelW, panelH, 12);
-            this.panelsContainer.add(panel);
-
-            // Player name
-            const nameColor = isCurrent ? '#e94560' : '#e0e0e0';
-            const nameText = this.add.text(pos.x, pos.y - 16, p.name, {
-                fontFamily: 'Arial, sans-serif',
-                fontSize: '22px',
-                color: nameColor,
-                fontStyle: isCurrent ? 'bold' : 'normal',
-            }).setOrigin(0.5);
-            this.panelsContainer.add(nameText);
-
-            // Card count
-            const countText = this.add.text(pos.x, pos.y + 16, `🃏 ${p.cardCount}`, {
-                fontFamily: 'Arial, sans-serif',
-                fontSize: '20px',
-                color: '#f1c40f',
-            }).setOrigin(0.5);
-            this.panelsContainer.add(countText);
-
-            // Score
-            const scoreText = this.add.text(pos.x + 80, pos.y - 16, `${p.score}pts`, {
-                fontFamily: 'Arial, sans-serif',
-                fontSize: '14px',
-                color: '#aaa',
-            }).setOrigin(0.5);
-            this.panelsContainer.add(scoreText);
-
-            // UNO indicator
-            if (p.cardCount === 1 && p.saidUno) {
-                const unoText = this.add.text(pos.x, pos.y + 42, 'UNO!', {
-                    fontFamily: 'Arial Black',
-                    fontSize: '18px',
-                    color: '#e94560',
-                    fontStyle: 'bold',
-                }).setOrigin(0.5);
-                this.panelsContainer.add(unoText);
-
-                this.tweens.add({
-                    targets: unoText,
-                    scaleX: 1.2, scaleY: 1.2,
-                    yoyo: true,
-                    repeat: -1,
-                    duration: 500,
-                });
-            }
-
-            // Disconnected indicator
-            if (!p.connected) {
-                const dcText = this.add.text(pos.x, pos.y + 42, '⏳ Reconnecting...', {
-                    fontFamily: 'Arial', fontSize: '14px', color: '#e74c3c',
-                }).setOrigin(0.5);
-                this.panelsContainer.add(dcText);
-            }
-
-            // Active player pulse
-            if (isCurrent) {
-                const pulse = this.add.graphics();
-                pulse.lineStyle(3, 0xe94560, 0.8);
-                pulse.strokeRoundedRect(pos.x - panelW / 2 - 4, pos.y - panelH / 2 - 4, panelW + 8, panelH + 8, 14);
-                this.panelsContainer.add(pulse);
-
-                this.tweens.add({
-                    targets: pulse,
-                    alpha: { from: 1, to: 0.3 },
-                    yoyo: true,
-                    repeat: -1,
-                    duration: 800,
-                });
-            }
-
-            this.playerPanels.push({ panel, nameText, countText, pos });
-        });
-    }
-
-    _getPlayerPositions(n) {
-        const positions = [];
-        const W = 1920;
-        const H = 1080;
-        const cx = W / 2;
-        const cy = H / 2;
-        const rx = 700; // horizontal radius
-        const ry = 420; // vertical radius
-
-        for (let i = 0; i < n; i++) {
-            // Distribute evenly around an ellipse, starting from the bottom
-            const angle = (Math.PI * 2 * i) / n - Math.PI / 2;
-            positions.push({
-                x: cx + Math.cos(angle) * rx,
-                y: cy + Math.sin(angle) * ry,
-            });
+        this.panelsContainer.add(dcLabel);
+        const remaining = p.disconnectTime
+          ? Math.max(0, Math.ceil(120 - (Date.now() - p.disconnectTime) / 1000))
+          : 120;
+        const dcCountdown = this.add.text(pos.x, pos.y + 10, `\u23f3 ${remaining}s`, {
+          fontFamily: 'Arial Black', fontSize: '22px', color: '#f39c12', fontStyle: 'bold',
+        }).setOrigin(0.5);
+        this.panelsContainer.add(dcCountdown);
+        if (p.disconnectTime) {
+          this._disconnectTexts.push({ text: dcCountdown, disconnectTime: p.disconnectTime });
         }
-        return positions;
-    }
+      }
 
-    _renderDrawCount(count) {
-        this.drawCountText.setText(`${count}`);
-    }
-
-    _renderColorLabel(colorName) {
-        if (!colorName) {
-            this.colorLabel.setText('');
-            return;
-        }
-        const hex = COLOR_MAP[colorName];
-        const hexStr = hex ? `#${hex.toString(16).padStart(6, '0')}` : '#fff';
-        this.colorLabel.setText(`● ${colorName.toUpperCase()}`);
-        this.colorLabel.setColor(hexStr);
-    }
-
-    _onCardEffect(effect) {
-        switch (effect.type) {
-            case 'reverse':
-                this._showMessage('REVERSE! ⇄');
-                this._spinDirectionArrow();
-                break;
-            case 'skip':
-                this._showMessage('SKIP! ⊘');
-                break;
-            case 'draw2':
-                this._showMessage('+2 DRAW! 🃏🃏');
-                this._screenShake(5);
-                break;
-            case 'wild_draw4':
-                this._showMessage('+4 WILD! 💀');
-                this._screenShake(10);
-                break;
-            case 'wild':
-                this._showMessage('WILD! 🌈');
-                break;
-        }
-    }
-
-    _showMessage(text) {
-        this.messageText.setText(text);
-        this.messageText.setAlpha(1).setScale(0.5);
+      // ── Active player pulsing glow ── FIX #5
+      if (isCurrent && p.connected) {
+        const pulse = this.add.graphics();
+        pulse.lineStyle(4, 0xe94560, 0.9);
+        pulse.strokeRoundedRect(
+          pos.x - panelW / 2 - 6, pos.y - panelH / 2 - 6,
+          panelW + 12, panelH + 12, 16
+        );
+        this.panelsContainer.add(pulse);
         this.tweens.add({
-            targets: this.messageText,
-            scaleX: 1.2, scaleY: 1.2,
-            alpha: 0,
-            duration: 2000,
-            ease: 'Cubic.easeOut',
+          targets: pulse,
+          alpha: { from: 1, to: 0.15 },
+          yoyo: true, repeat: -1, duration: 600,
         });
-    }
 
-    _spinDirectionArrow() {
+        // Arrow indicator pointing at active player
+        const arrowY = pos.y - panelH / 2 - 28;
+        const arrow = this.add.text(pos.x, arrowY, '▼', {
+          fontFamily: 'Arial', fontSize: '24px', color: '#e94560',
+        }).setOrigin(0.5);
+        this.panelsContainer.add(arrow);
         this.tweens.add({
-            targets: this.directionText,
-            angle: { from: 0, to: 360 },
-            duration: 600,
-            ease: 'Cubic.easeOut',
+          targets: arrow,
+          y: arrowY + 6,
+          yoyo: true, repeat: -1, duration: 500, ease: 'Sine.easeInOut',
         });
-    }
+      }
 
-    _screenShake(intensity = 8) {
-        this.cameras.main.shake(400, intensity / 1000);
-    }
+      this.playerPanels.push({ pos, playerId: p.id });
+    });
+  }
 
-    _showConfetti() {
-        // Simple confetti using graphics particles
-        for (let i = 0; i < 80; i++) {
-            const x = Phaser.Math.Between(200, 1720);
-            const color = Phaser.Math.RND.pick([0xe94560, 0xf1c40f, 0x2ecc71, 0x3498db, 0x9b59b6]);
-            const rect = this.add.graphics();
-            rect.fillStyle(color, 1);
-            rect.fillRect(-4, -4, 8, 8);
-            rect.setPosition(x, -20);
-
-            this.tweens.add({
-                targets: rect,
-                y: 1100,
-                x: x + Phaser.Math.Between(-100, 100),
-                angle: Phaser.Math.Between(0, 720),
-                duration: Phaser.Math.Between(1500, 3000),
-                ease: 'Cubic.easeIn',
-                onComplete: () => rect.destroy(),
-            });
-        }
+  _getPlayerPositions(n) {
+    const positions = [];
+    for (let i = 0; i < n; i++) {
+      const angle = (Math.PI * 2 * i) / n - Math.PI / 2;
+      positions.push({
+        x: CX + Math.cos(angle) * PLAYER_RX,
+        y: CY + Math.sin(angle) * PLAYER_RY,
+      });
     }
+    return positions;
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // DRAW COUNT + COLOR + STACK
+  // ══════════════════════════════════════════════════════════════════
+
+  _renderDrawCount(count) {
+    this.drawCountText.setText(`${count}`);
+  }
+
+  _renderColorLabel(colorName) {
+    this.colorDot.clear();
+    if (!colorName) { this.colorText.setText(''); return; }
+    const hex = getColorHex(colorName);
+    this.colorDot.fillStyle(hex, 1);
+    this.colorDot.fillCircle(0, 0, 10);
+    this.colorDot.lineStyle(2, 0xffffff, 0.5);
+    this.colorDot.strokeCircle(0, 0, 10);
+    this.colorText.setText(colorName.toUpperCase());
+    this.colorText.setColor(COLOR_HEX_STR[colorName] || '#fff');
+  }
+
+  _renderDrawStack(stack) {
+    if (stack > 0) {
+      this.stackText.setText(`+${stack} STACKED!`);
+      this.stackText.setAlpha(1);
+      this.tweens.add({
+        targets: this.stackText,
+        scaleX: 1.1, scaleY: 1.1,
+        yoyo: true, repeat: 0, duration: 300,
+      });
+    } else {
+      this.stackText.setAlpha(0);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // CARD EFFECTS
+  // ══════════════════════════════════════════════════════════════════
+
+  _onCardEffect(effect) {
+    switch (effect.type) {
+      case 'reverse':
+        this._showMessage('REVERSE! ⇄');
+        break;
+      case 'skip':
+        this._showMessage('SKIP! ⊘');
+        playSkipSound();
+        break;
+      case 'draw2':
+        this._showMessage(`+2 DRAW! (Stack: ${effect.stack || 2})`);
+        this._screenShake(5);
+        playDrawSound();
+        break;
+      case 'wild_draw4':
+        this._showMessage('+4 WILD! 💀');
+        this._screenShake(10);
+        playDrawSound();
+        break;
+      case 'wild':
+        this._showMessage('WILD! 🌈');
+        break;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // UNO CALL ANIMATION
+  // ══════════════════════════════════════════════════════════════════
+
+  _showUnoCall(playerName) {
+    this.unoCallText.setText(`${playerName}: UNO!`);
+    this.unoCallText.setAlpha(0).setScale(0.3).setDepth(100);
+    this.tweens.add({
+      targets: this.unoCallText,
+      alpha: 1, scaleX: 1.3, scaleY: 1.3,
+      duration: 400, ease: 'Back.easeOut',
+      yoyo: true, hold: 800,
+      onComplete: () => this.unoCallText.setAlpha(0),
+    });
+    const flash = this.add.graphics();
+    flash.fillStyle(0xf1c40f, 0.15);
+    flash.fillRect(0, 0, W, H);
+    flash.setDepth(99);
+    this.tweens.add({
+      targets: flash, alpha: 0, duration: 600,
+      onComplete: () => flash.destroy(),
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // MESSAGES & EFFECTS
+  // ══════════════════════════════════════════════════════════════════
+
+  _showMessage(text) {
+    this.messageText.setText(text);
+    this.messageText.setAlpha(1).setScale(0.5);
+    this.tweens.add({
+      targets: this.messageText,
+      scaleX: 1.1, scaleY: 1.1, alpha: 0,
+      duration: 2200, ease: 'Cubic.easeOut',
+    });
+  }
+
+  _screenShake(intensity = 8) {
+    this.cameras.main.shake(400, intensity / 1000);
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // DRAW EVENT ANIMATION — cards fly from pile to player
+  // ══════════════════════════════════════════════════════════════
+
+  _animateDrawEvent(data) {
+    const { playerId, drawCount } = data;
+    const playerPos = this._getPlayerPanelPos(playerId);
+    if (!playerPos) return;
+
+    const count = Math.min(drawCount, 10); // cap visual cards
+    for (let i = 0; i < count; i++) {
+      this.time.delayedCall(i * 300, () => {
+        const cardBack = drawCardBack(this, CX + 120, CY, 0.8);
+        cardBack.setDepth(50);
+        playDrawSound();
+
+        this.tweens.add({
+          targets: cardBack,
+          x: playerPos.x,
+          y: playerPos.y + 40,
+          scaleX: 0.35,
+          scaleY: 0.35,
+          alpha: 0,
+          duration: 800,
+          ease: 'Quad.easeOut',
+          onComplete: () => cardBack.destroy(),
+        });
+      });
+    }
+  }
 }
