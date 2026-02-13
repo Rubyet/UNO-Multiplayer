@@ -229,6 +229,13 @@ io.on('connection', (socket) => {
 
     cb({ ok: true });
 
+    // Emit color_chosen for TV sound effects (color announcement + wild change)
+    const topCard = engine.discardPile[engine.discardPile.length - 1];
+    io.to(currentRoomCode).emit('color_chosen', {
+      color,
+      cardType: topCard ? topCard.value : 'wild',
+    });
+
     if (result.effect === 'awaiting_challenge') {
       const target = engine.getPlayer(result.challengeTarget);
       if (target && target.connected) {

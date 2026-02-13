@@ -124,7 +124,7 @@ export function drawCard(scene, x, y, card, scale = 1) {
     fontStyle: 'bold',
     stroke: '#00000044',
     strokeThickness: 1,
-  }).setOrigin(1, 1).setAngle(180);
+  }).setOrigin(0, 0).setAngle(180);
   container.add(cBottomRight);
 
   container.setSize(W, H);

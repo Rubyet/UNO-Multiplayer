@@ -23,7 +23,7 @@ const Step = {
 };
 
 const HAND_SIZE = 7;
-const WIN_SCORE = 500;
+const BASE_WIN_SCORE = 500;
 
 // Avatar pool assigned round-robin
 const AVATARS = [
@@ -48,6 +48,9 @@ class GameEngine {
 
     // +2 stacking accumulator
     this.drawStack = 0;
+
+    // Dynamic win score (scales with player count)
+    this.winScore = BASE_WIN_SCORE;
 
     // Wild Draw 4 challenge tracking
     this._lastPlayerId = null;
@@ -137,6 +140,9 @@ class GameEngine {
     this.discardPile = [];
     this.direction = 1;
     this.currentPlayerIndex = 0;
+
+    // Scale win score: 500 for 2 players, +250 per extra player
+    this.winScore = BASE_WIN_SCORE + Math.max(0, this.players.length - 2) * 250;
     this._turnLock = false;
     this.drawStack = 0;
     this._drawStackType = null;
@@ -536,7 +542,7 @@ class GameEngine {
     }
     winner.score += roundScore;
 
-    const isGameOver = winner.score >= WIN_SCORE;
+    const isGameOver = winner.score >= this.winScore;
     this.phase = isGameOver ? Phase.GAME_OVER : Phase.ROUND_OVER;
 
     return {

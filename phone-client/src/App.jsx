@@ -263,6 +263,41 @@ export default function App() {
     });
   }, []);
 
+  // ── Prevent accidental reload (Android + iOS) ──
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      // Standard for most browsers (Android Chrome, etc.)
+      e.preventDefault();
+      e.returnValue = ''; // Required for Chrome
+      return ''; // Required for some older browsers
+    };
+
+    // iOS Safari: prevent pull-to-refresh by disabling touchmove at boundaries
+    const handleTouchMove = (e) => {
+      // Only prevent when the document is at the top and trying to pull down
+      if (document.documentElement.scrollTop === 0 && e.touches[0].clientY > 0) {
+        // Don't block scrollable content within the app
+        const target = e.target;
+        let scrollable = target;
+        while (scrollable && scrollable !== document.body) {
+          const style = window.getComputedStyle(scrollable);
+          if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
+            if (scrollable.scrollHeight > scrollable.clientHeight) return;
+          }
+          scrollable = scrollable.parentElement;
+        }
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('touchmove', handleTouchMove, { passive: true });
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('touchmove', handleTouchMove);
+    };
+  }, []);
+
   // ── Render ──
   const containerStyle = {
     minHeight: '100vh',

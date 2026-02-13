@@ -25,6 +25,13 @@ import draw14CardsUrl from '../resources/sound_effects/draw-14-cards.mp3';
 import draw16CardsUrl from '../resources/sound_effects/draw-16-cards.mp3';
 import draw18CardsUrl from '../resources/sound_effects/draw-18-cards.mp3';
 
+// ── Color / Wild Sound Imports ──
+import redUrl from '../resources/sound_effects/red.mp3';
+import blueUrl from '../resources/sound_effects/blue.mp3';
+import greenUrl from '../resources/sound_effects/green.mp3';
+import yellowUrl from '../resources/sound_effects/yellow.mp3';
+import changeUrl from '../resources/sound_effects/change.mp3';
+
 // ── Avatar emoji map ──
 const AVATAR_EMOJI = {
   cat: '🐱', dog: '🐶', fox: '🦊', owl: '🦉', bear: '🐻',
@@ -43,6 +50,8 @@ function initSounds() {
     'draw-10-cards': draw10CardsUrl, 'draw-12-cards': draw12CardsUrl,
     'draw-14-cards': draw14CardsUrl, 'draw-16-cards': draw16CardsUrl,
     'draw-18-cards': draw18CardsUrl,
+    'red': redUrl, 'blue': blueUrl, 'green': greenUrl, 'yellow': yellowUrl,
+    'change': changeUrl,
   };
   for (const [name, url] of Object.entries(map)) {
     const audio = new Audio(url);
@@ -165,7 +174,7 @@ export class GameScene extends Phaser.Scene {
       this.drawPileGroup.add(back);
     }
     this.add.text(CX + 120, CY + 90, 'DRAW', {
-      fontFamily: 'Arial Black', fontSize: '16px', color: '#888',
+      fontFamily: 'Arial Black', fontSize: '16px', color: '#f1c40f',
     }).setOrigin(0.5);
     this.drawCountText = this.add.text(CX + 120, CY - 90, '', {
       fontFamily: 'Arial Black', fontSize: '20px', color: '#f1c40f',
@@ -236,6 +245,7 @@ export class GameScene extends Phaser.Scene {
     socket.off('game_over');
     socket.off('draw_event');
     socket.off('game_started');
+    socket.off('color_chosen');
 
     // ── Socket listeners ──
     socket.on('state_update', (state) => {
@@ -250,6 +260,17 @@ export class GameScene extends Phaser.Scene {
           ? `Challenge FAILED! Challenger draws ${data.drew}`
           : `Challenge declined. Draws ${data.drew}`;
       this._showMessage(msg);
+    });
+    // ── Color chosen sound (both wild and +4) ──
+    socket.on('color_chosen', (data) => {
+      // Play the color announcement sound
+      if (['red', 'blue', 'green', 'yellow'].includes(data.color)) {
+        playSound(data.color);
+      }
+      // Play change.mp3 for normal wild (not wild_draw4)
+      if (data.cardType === 'wild') {
+        setTimeout(() => playSound('change'), 600);
+      }
     });
     socket.on('uno_event', (data) => {
       if (data.effect === 'uno_said') {
@@ -292,8 +313,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // ORBITING DIRECTION INDICATOR — FIX #4
-  // A glowing dot that continuously circles the table ellipse
+  // ORBITING DIRECTION INDICATOR — Two arrows with tails, 180° apart
   // ══════════════════════════════════════════════════════════════════
 
   _updateOrbit(delta) {
@@ -304,32 +324,101 @@ export class GameScene extends Phaser.Scene {
     if (this._orbitAngle > Math.PI * 2) this._orbitAngle -= Math.PI * 2;
     if (this._orbitAngle < -Math.PI * 2) this._orbitAngle += Math.PI * 2;
 
-    const dotX = CX + Math.cos(this._orbitAngle) * ORBIT_RX;
-    const dotY = CY + Math.sin(this._orbitAngle) * ORBIT_RY;
-
-    // Trail — 5 fading dots behind the main dot
-    this.orbitTrailGfx.clear();
-    for (let i = 1; i <= 5; i++) {
-      const trailAngle = this._orbitAngle - i * 0.08 * this._orbitDir;
-      const tx = CX + Math.cos(trailAngle) * ORBIT_RX;
-      const ty = CY + Math.sin(trailAngle) * ORBIT_RY;
-      const alpha = 0.3 - i * 0.05;
-      const radius = 7 - i * 0.8;
-      this.orbitTrailGfx.fillStyle(0x2ecc71, Math.max(alpha, 0.02));
-      this.orbitTrailGfx.fillCircle(tx, ty, Math.max(radius, 2));
-    }
-
-    // Main dot
     this.orbitGfx.clear();
-    // Outer glow
-    this.orbitGfx.fillStyle(0x2ecc71, 0.15);
-    this.orbitGfx.fillCircle(dotX, dotY, 18);
-    // Inner glow
-    this.orbitGfx.fillStyle(0x2ecc71, 0.4);
-    this.orbitGfx.fillCircle(dotX, dotY, 10);
-    // Core dot
-    this.orbitGfx.fillStyle(0xffffff, 0.9);
-    this.orbitGfx.fillCircle(dotX, dotY, 5);
+    this.orbitTrailGfx.clear();
+
+    // Draw two arrows 180° apart
+    for (let a = 0; a < 2; a++) {
+      const baseAngle = this._orbitAngle + a * Math.PI;
+      this._drawOrbitArrow(baseAngle);
+    }
+  }
+
+  /**
+   * Draw a single arrow with glowing tail along the orbit ellipse.
+   */
+  _drawOrbitArrow(baseAngle) {
+    const gfx = this.orbitGfx;
+    const trailGfx = this.orbitTrailGfx;
+
+    // Arrow head position
+    const hx = CX + Math.cos(baseAngle) * ORBIT_RX;
+    const hy = CY + Math.sin(baseAngle) * ORBIT_RY;
+
+    // Tangent direction (derivative of ellipse parametric equation)
+    const tx = -Math.sin(baseAngle) * ORBIT_RX * this._orbitDir;
+    const ty = Math.cos(baseAngle) * ORBIT_RY * this._orbitDir;
+    const tLen = Math.sqrt(tx * tx + ty * ty);
+    const nx = tx / tLen; // normalized tangent x
+    const ny = ty / tLen; // normalized tangent y
+
+    // Perpendicular for arrow width
+    const px = -ny;
+    const py = nx;
+
+    const arrowLen = 22;
+    const arrowHalfW = 10;
+
+    // Arrow tip (forward along tangent)
+    const tipX = hx + nx * arrowLen * 0.5;
+    const tipY = hy + ny * arrowLen * 0.5;
+
+    // Arrow base corners
+    const baseX = hx - nx * arrowLen * 0.5;
+    const baseY = hy - ny * arrowLen * 0.5;
+    const lx = baseX + px * arrowHalfW;
+    const ly = baseY + py * arrowHalfW;
+    const rx = baseX - px * arrowHalfW;
+    const ry = baseY - py * arrowHalfW;
+
+    // Outer glow for the arrow
+    gfx.fillStyle(0x2ecc71, 0.15);
+    gfx.fillCircle(hx, hy, 24);
+    gfx.fillStyle(0x2ecc71, 0.08);
+    gfx.fillCircle(hx, hy, 34);
+
+    // Arrow head (triangle)
+    gfx.fillStyle(0x2ecc71, 0.9);
+    gfx.fillTriangle(tipX, tipY, lx, ly, rx, ry);
+
+    // White core highlight
+    const coreLen = 14;
+    const coreHW = 5;
+    const ctipX = hx + nx * coreLen * 0.5;
+    const ctipY = hy + ny * coreLen * 0.5;
+    const cbaseX = hx - nx * coreLen * 0.5;
+    const cbaseY = hy - ny * coreLen * 0.5;
+    gfx.fillStyle(0xffffff, 0.7);
+    gfx.fillTriangle(
+      ctipX, ctipY,
+      cbaseX + px * coreHW, cbaseY + py * coreHW,
+      cbaseX - px * coreHW, cbaseY - py * coreHW
+    );
+
+    // Tail — fading segments trailing behind the arrow
+    const tailSegments = 8;
+    for (let i = 1; i <= tailSegments; i++) {
+      const trailAngle = baseAngle - i * 0.06 * this._orbitDir;
+      const sx = CX + Math.cos(trailAngle) * ORBIT_RX;
+      const sy = CY + Math.sin(trailAngle) * ORBIT_RY;
+      const alpha = 0.35 - i * 0.04;
+      const width = arrowHalfW * (1 - i / (tailSegments + 1)) * 0.7;
+
+      // Trail tangent at this position
+      const stx = -Math.sin(trailAngle) * ORBIT_RX * this._orbitDir;
+      const sty = Math.cos(trailAngle) * ORBIT_RY * this._orbitDir;
+      const stLen = Math.sqrt(stx * stx + sty * sty);
+      const spx = -(sty / stLen);
+      const spy = stx / stLen;
+
+      trailGfx.fillStyle(0x2ecc71, Math.max(alpha, 0.02));
+      trailGfx.fillTriangle(
+        sx + spx * width, sy + spy * width,
+        sx - spx * width, sy - spy * width,
+        CX + Math.cos(trailAngle - 0.04 * this._orbitDir) * ORBIT_RX,
+        CY + Math.sin(trailAngle - 0.04 * this._orbitDir) * ORBIT_RY
+      );
+    }
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -547,16 +636,20 @@ export class GameScene extends Phaser.Scene {
       const panel = this.add.graphics();
 
       if (isCurrent) {
-        // ── Outer glow halos ── FIX #5
-        panel.fillStyle(0xe94560, 0.06);
-        panel.fillRoundedRect(pos.x - panelW / 2 - 18, pos.y - panelH / 2 - 18, panelW + 36, panelH + 36, 22);
-        panel.fillStyle(0xe94560, 0.12);
-        panel.fillRoundedRect(pos.x - panelW / 2 - 10, pos.y - panelH / 2 - 10, panelW + 20, panelH + 20, 18);
+        // ── Outer glow halos — BIG & VIBRANT ──
+        panel.fillStyle(0xe94560, 0.04);
+        panel.fillRoundedRect(pos.x - panelW / 2 - 36, pos.y - panelH / 2 - 36, panelW + 72, panelH + 72, 30);
+        panel.fillStyle(0xe94560, 0.08);
+        panel.fillRoundedRect(pos.x - panelW / 2 - 26, pos.y - panelH / 2 - 26, panelW + 52, panelH + 52, 26);
+        panel.fillStyle(0xe94560, 0.14);
+        panel.fillRoundedRect(pos.x - panelW / 2 - 16, pos.y - panelH / 2 - 16, panelW + 32, panelH + 32, 22);
+        panel.fillStyle(0xe94560, 0.22);
+        panel.fillRoundedRect(pos.x - panelW / 2 - 8, pos.y - panelH / 2 - 8, panelW + 16, panelH + 16, 18);
 
         // Panel body
         panel.fillStyle(0x1a1a2e, 0.95);
         panel.fillRoundedRect(pos.x - panelW / 2, pos.y - panelH / 2, panelW, panelH, 14);
-        panel.lineStyle(3, 0xe94560, 1);
+        panel.lineStyle(4, 0xe94560, 1);
         panel.strokeRoundedRect(pos.x - panelW / 2, pos.y - panelH / 2, panelW, panelH, 14);
       } else {
         panel.fillStyle(0x1a1a2e, 0.8);
@@ -662,19 +755,36 @@ export class GameScene extends Phaser.Scene {
         }
       }
 
-      // ── Active player pulsing glow ── FIX #5
+      // ── Active player pulsing glow — BIG & VIBRANT ──
       if (isCurrent && p.connected) {
+        // Outer pulsing ring
+        const pulseOuter = this.add.graphics();
+        pulseOuter.lineStyle(3, 0xe94560, 0.5);
+        pulseOuter.strokeRoundedRect(
+          pos.x - panelW / 2 - 20, pos.y - panelH / 2 - 20,
+          panelW + 40, panelH + 40, 22
+        );
+        this.panelsContainer.add(pulseOuter);
+        this.tweens.add({
+          targets: pulseOuter,
+          alpha: { from: 0.6, to: 0 },
+          scaleX: { from: 1, to: 1.08 },
+          scaleY: { from: 1, to: 1.08 },
+          yoyo: true, repeat: -1, duration: 800,
+        });
+
+        // Inner pulsing ring
         const pulse = this.add.graphics();
-        pulse.lineStyle(4, 0xe94560, 0.9);
+        pulse.lineStyle(5, 0xe94560, 1);
         pulse.strokeRoundedRect(
-          pos.x - panelW / 2 - 6, pos.y - panelH / 2 - 6,
-          panelW + 12, panelH + 12, 16
+          pos.x - panelW / 2 - 8, pos.y - panelH / 2 - 8,
+          panelW + 16, panelH + 16, 18
         );
         this.panelsContainer.add(pulse);
         this.tweens.add({
           targets: pulse,
-          alpha: { from: 1, to: 0.15 },
-          yoyo: true, repeat: -1, duration: 600,
+          alpha: { from: 1, to: 0.2 },
+          yoyo: true, repeat: -1, duration: 500,
         });
 
         // Arrow indicator pointing at active player
@@ -766,6 +876,8 @@ export class GameScene extends Phaser.Scene {
         break;
       case 'wild':
         this._showMessage('WILD! 🌈');
+        this._screenShake(5);
+        playSound('change');
         break;
     }
   }
