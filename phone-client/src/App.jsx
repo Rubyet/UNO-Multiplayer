@@ -300,7 +300,7 @@ export default function App() {
 
   // ── Render ──
   const containerStyle = {
-    minHeight: '100vh',
+    minHeight: '80vh',
     display: 'flex',
     flexDirection: 'column',
     background: '#1a1a2e',

@@ -661,7 +661,7 @@ export class GameScene extends Phaser.Scene {
 
       // ── Avatar emoji ──
       const emoji = AVATAR_EMOJI[p.avatar] || '🎮';
-      const avatarSize = isCurrent ? '38px' : '32px';
+      const avatarSize = isCurrent ? '50px' : '40px';
       const avatarText = this.add.text(pos.x - panelW / 2 + 30 * scale, pos.y - 6, emoji, {
         fontSize: avatarSize,
       }).setOrigin(0.5);
