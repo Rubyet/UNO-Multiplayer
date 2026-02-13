@@ -87,6 +87,7 @@ export class RoundOverScene extends Phaser.Scene {
     // Confetti
     this._showConfetti();
 
+    socket.off('game_started');
     socket.on('game_started', (data) => {
       this.scene.start('GameScene', {
         firstCard: data.firstCard,

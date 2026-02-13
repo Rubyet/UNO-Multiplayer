@@ -82,6 +82,11 @@ io.on('connection', (socket) => {
         playerId = existing.id;
         engine.reconnectPlayer(playerId, socket.id);
         roomManager.clearDisconnectTimer(playerId);
+      } else if (existing && existing.connected && engine.phase !== Phase.LOBBY) {
+        // Game in progress — allow reconnect (old socket hasn't timed out yet)
+        playerId = existing.id;
+        engine.reconnectPlayer(playerId, socket.id);
+        roomManager.clearDisconnectTimer(playerId);
       } else if (existing && existing.connected) {
         return cb({ ok: false, reason: 'Name already taken in this room' });
       } else {
@@ -370,6 +375,10 @@ io.on('connection', (socket) => {
 
     const engine = roomManager.getRoom(currentRoomCode);
     if (!engine) return;
+
+    // Only disconnect if this socket is still the player's active socket
+    const player = engine.getPlayer(currentPlayerId);
+    if (!player || player.socketId !== socket.id) return;
 
     engine.disconnectPlayer(currentPlayerId);
     broadcastState(currentRoomCode);

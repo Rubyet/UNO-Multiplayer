@@ -8,6 +8,17 @@ import Lobby from './components/Lobby.jsx';
 import Hand from './components/Hand.jsx';
 import ColorPicker from './components/ColorPicker.jsx';
 import GameOver from './components/GameOver.jsx';
+import winSfxUrl from './resources/sound_effects/win.mp3';
+import loseSfxUrl from './resources/sound_effects/lose.mp3';
+
+const winAudio = new Audio(winSfxUrl);
+const loseAudio = new Audio(loseSfxUrl);
+winAudio.preload = 'auto';
+loseAudio.preload = 'auto';
+function playSfx(audio) {
+  const clone = audio.cloneNode();
+  clone.play().catch(() => {});
+}
 
 const SCREENS = {
   LOBBY: 'lobby',
@@ -21,6 +32,7 @@ const SCREENS = {
 export default function App() {
   const [screen, setScreen] = useState(SCREENS.LOBBY);
   const [playerId, setPlayerId] = useState(() => localStorage.getItem('uno_playerId'));
+  const playerIdRef = useRef(playerId);
   const [playerName, setPlayerName] = useState('');
   const [roomCode, setRoomCode] = useState('');
   const [joined, setJoined] = useState(false);
@@ -79,6 +91,9 @@ export default function App() {
     };
   }, []);
 
+  // Keep playerIdRef in sync
+  useEffect(() => { playerIdRef.current = playerId; }, [playerId]);
+
   // ── Socket listeners ──
   useEffect(() => {
     socket.on('hand_update', (data) => {
@@ -95,7 +110,7 @@ export default function App() {
       setCurrentColor(data.currentColor);
       setPhase(data.phase);
       setDrawStack(data.drawStack || 0);
-      if (playerId) setIsMyTurn(data.currentPlayerId === playerId);
+      if (playerIdRef.current) setIsMyTurn(data.currentPlayerId === playerIdRef.current);
     });
 
     socket.on('game_started', () => {
@@ -109,7 +124,7 @@ export default function App() {
     });
 
     socket.on('color_selection_required', (data) => {
-      if (data.playerId === playerId) setScreen(SCREENS.COLOR_PICK);
+      if (data.playerId === playerIdRef.current) setScreen(SCREENS.COLOR_PICK);
     });
 
     socket.on('challenge_available', (data) => {
@@ -119,9 +134,9 @@ export default function App() {
 
     socket.on('challenge_result', (data) => {
       const msg = data.effect === 'challenge_success'
-        ? `Challenge succeeded! ${data.drewPlayer === playerId ? 'You draw' : 'Offender draws'} ${data.drew}`
+        ? `Challenge succeeded! ${data.drewPlayer === playerIdRef.current ? 'You draw' : 'Offender draws'} ${data.drew}`
         : data.effect === 'challenge_fail'
-          ? `Challenge failed! ${data.drewPlayer === playerId ? 'You draw' : 'Challenger draws'} ${data.drew}`
+          ? `Challenge failed! ${data.drewPlayer === playerIdRef.current ? 'You draw' : 'Challenger draws'} ${data.drew}`
           : `Challenge declined. ${data.drew} cards drawn.`;
       setMessage(msg);
       setScreen(SCREENS.GAME);
@@ -136,7 +151,7 @@ export default function App() {
     });
 
     socket.on('uno_penalty', (data) => {
-      if (data.playerId === playerId) {
+      if (data.playerId === playerIdRef.current) {
         setMessage('UNO Penalty! +1 card 😬');
       } else {
         setMessage('UNO Penalty! +1 card');
@@ -145,18 +160,22 @@ export default function App() {
     });
 
     socket.on('card_effect', (effect) => {
-      if (effect.type === 'skip' && effect.skippedId === playerId) {
+      if (effect.type === 'skip' && effect.skippedId === playerIdRef.current) {
         setMessage('You were skipped! ⊘');
         setTimeout(() => setMessage(''), 2000);
       }
     });
 
     socket.on('round_over', (data) => {
+      if (data.winnerId === playerIdRef.current) playSfx(winAudio);
+      else playSfx(loseAudio);
       setResultData(data);
       setScreen(SCREENS.ROUND_OVER);
     });
 
     socket.on('game_over', (data) => {
+      if (data.winnerId === playerIdRef.current) playSfx(winAudio);
+      else playSfx(loseAudio);
       setResultData(data);
       setScreen(SCREENS.GAME_OVER);
     });
@@ -175,7 +194,7 @@ export default function App() {
       socket.off('round_over');
       socket.off('game_over');
     };
-  }, [playerId]);
+  }, []);
 
   // ── Actions ──
   const joinRoom = useCallback((name, code) => {

@@ -35,8 +35,8 @@ export default function Hand({ cards, isMyTurn, currentColor, topCard, onPlay, d
       // New cards — animate revealing one by one
       setRevealedCount(prevLen);
       let count = prevLen;
-      // Faster for initial deal (120ms), slower for draws (400ms)
-      const delay = prevLen === 0 ? 120 : 400;
+      // Faster for initial deal (1000ms), slower for draws (1500ms)
+      const delay = prevLen === 0 ? 1000 : 1500;
       const interval = setInterval(() => {
         count++;
         setRevealedCount(count);

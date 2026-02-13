@@ -6,41 +6,65 @@ import Phaser from 'phaser';
 import socket from '../socket.js';
 import { drawCard, drawCardBack, getColorHex, COLOR_MAP, COLOR_HEX_STR } from '../CardGraphics.js';
 
+// ── MP3 Sound Imports ──
+import cardDealUrl from '../resources/sound_effects/card-deal.mp3';
+import unoUrl from '../resources/sound_effects/uno.mp3';
+import oopsUrl from '../resources/sound_effects/oops.mp3';
+import reversUrl from '../resources/sound_effects/revers.mp3';
+import skipUrl from '../resources/sound_effects/skip.mp3';
+import draw2Url from '../resources/sound_effects/draw2.mp3';
+import draw4Url from '../resources/sound_effects/draw4.mp3';
+import successUrl from '../resources/sound_effects/success.mp3';
+import draw2CardsUrl from '../resources/sound_effects/draw-2-cards.mp3';
+import draw4CardsUrl from '../resources/sound_effects/draw-4-cards.mp3';
+import draw6CardsUrl from '../resources/sound_effects/draw-6-cards.mp3';
+import draw8CardsUrl from '../resources/sound_effects/draw-8-cards.mp3';
+import draw10CardsUrl from '../resources/sound_effects/draw-10-cards.mp3';
+import draw12CardsUrl from '../resources/sound_effects/draw-12-cards.mp3';
+import draw14CardsUrl from '../resources/sound_effects/draw-14-cards.mp3';
+import draw16CardsUrl from '../resources/sound_effects/draw-16-cards.mp3';
+import draw18CardsUrl from '../resources/sound_effects/draw-18-cards.mp3';
+
 // ── Avatar emoji map ──
 const AVATAR_EMOJI = {
   cat: '🐱', dog: '🐶', fox: '🦊', owl: '🦉', bear: '🐻',
   rabbit: '🐰', panda: '🐼', koala: '🐨', lion: '🦁', penguin: '🐧',
 };
 
-// ── Programmatic Web Audio sounds ──
-let audioCtx = null;
-function getAudioCtx() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  return audioCtx;
+// ── MP3 Sound System ──
+const sfx = {};
+function initSounds() {
+  const map = {
+    'card-deal': cardDealUrl, 'uno': unoUrl, 'oops': oopsUrl,
+    'revers': reversUrl, 'skip': skipUrl, 'draw2': draw2Url,
+    'draw4': draw4Url, 'success': successUrl,
+    'draw-2-cards': draw2CardsUrl, 'draw-4-cards': draw4CardsUrl,
+    'draw-6-cards': draw6CardsUrl, 'draw-8-cards': draw8CardsUrl,
+    'draw-10-cards': draw10CardsUrl, 'draw-12-cards': draw12CardsUrl,
+    'draw-14-cards': draw14CardsUrl, 'draw-16-cards': draw16CardsUrl,
+    'draw-18-cards': draw18CardsUrl,
+  };
+  for (const [name, url] of Object.entries(map)) {
+    const audio = new Audio(url);
+    audio.preload = 'auto';
+    sfx[name] = audio;
+  }
 }
-function playTone(freq, dur, type = 'sine', vol = 0.12) {
-  try {
-    const ctx = getAudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = type; osc.frequency.value = freq;
-    gain.gain.setValueAtTime(vol, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
-    osc.connect(gain); gain.connect(ctx.destination);
-    osc.start(ctx.currentTime); osc.stop(ctx.currentTime + dur);
-  } catch (_) {}
+initSounds();
+
+function playSound(name) {
+  const audio = sfx[name];
+  if (audio) {
+    const clone = audio.cloneNode();
+    clone.volume = audio.volume;
+    clone.play().catch(() => {});
+  }
 }
-function playDealSound() { playTone(1200, 0.06, 'square', 0.08); }
-function playCardPlaySound() { playTone(600, 0.1, 'triangle', 0.15); }
-function playDrawSound() { playTone(300, 0.15, 'sawtooth', 0.08); }
-function playUnoSound() {
-  playTone(523, 0.12, 'square', 0.18);
-  setTimeout(() => playTone(659, 0.12, 'square', 0.18), 130);
-  setTimeout(() => playTone(784, 0.2, 'square', 0.22), 260);
+
+function playDrawNCards(count) {
+  const n = Math.min(18, Math.max(2, Math.floor(count / 2) * 2));
+  playSound(`draw-${n}-cards`);
 }
-function playReverseSound() { playTone(400, 0.1, 'sine', 0.12); setTimeout(() => playTone(500, 0.15, 'sine', 0.12), 120); }
-function playSkipSound() { playTone(200, 0.2, 'sawtooth', 0.1); }
-function playPenaltySound() { playTone(200, 0.3, 'square', 0.15); setTimeout(() => playTone(150, 0.3, 'square', 0.15), 300); }
 
 const W = 1920;
 const H = 1080;
@@ -73,7 +97,8 @@ export class GameScene extends Phaser.Scene {
     this.firstCard = data?.firstCard;
     this.firstEffects = data?.effects;
     this.dealSequence = data?.dealSequence || [];
-    this._initialPlayers = data?.players || [];
+    // Zero out card counts so deal animation can increment them
+    this._initialPlayers = (data?.players || []).map(p => ({ ...p, cardCount: 0 }));
     this._roomCode = data?.roomCode || null;
   }
 
@@ -119,7 +144,7 @@ export class GameScene extends Phaser.Scene {
 
     // ── Room code at top ──
     if (this._roomCode) {
-      this.add.text(CX, 28, `ROOM: ${this._roomCode}`, {
+      this.add.text(1820, 28, `ROOM: ${this._roomCode}`, {
         fontFamily: 'Courier New, monospace', fontSize: '28px',
         color: '#f1c40f', fontStyle: 'bold',
         stroke: '#000', strokeThickness: 2,
@@ -198,8 +223,19 @@ export class GameScene extends Phaser.Scene {
         currentColor: null,
         drawStack: 0,
       };
-      this._renderPlayers(this._initialPlayers, this._initialPlayers[0]?.id);
+      this._renderPlayers(this._initialPlayers, null);
     }
+
+    // ── Clean up prior socket listeners ──
+    socket.off('state_update');
+    socket.off('card_effect');
+    socket.off('challenge_result');
+    socket.off('uno_event');
+    socket.off('uno_penalty');
+    socket.off('round_over');
+    socket.off('game_over');
+    socket.off('draw_event');
+    socket.off('game_started');
 
     // ── Socket listeners ──
     socket.on('state_update', (state) => {
@@ -218,15 +254,21 @@ export class GameScene extends Phaser.Scene {
     socket.on('uno_event', (data) => {
       if (data.effect === 'uno_said') {
         this._showUnoCall(data.playerName || 'Player');
-        playUnoSound();
+        playSound('uno');
       }
     });
     socket.on('uno_penalty', () => {
       this._showMessage('UNO Penalty! +1 card');
-      playPenaltySound();
+      playSound('oops');
     });
-    socket.on('round_over', (data) => this.scene.start('RoundOverScene', data));
-    socket.on('game_over', (data) => this.scene.start('GameOverScene', data));
+    socket.on('round_over', (data) => {
+      playSound('success');
+      this.scene.start('RoundOverScene', data);
+    });
+    socket.on('game_over', (data) => {
+      playSound('success');
+      this.scene.start('GameOverScene', data);
+    });
 
     // ── Draw event animation ──
     socket.on('draw_event', (data) => this._animateDrawEvent(data));
@@ -291,7 +333,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // DEAL ANIMATION — FIX #2: 300ms per card
+  // DEAL ANIMATION — FIX #2: 1000ms per card
   // ══════════════════════════════════════════════════════════════════
 
   _playDealAnimation() {
@@ -320,6 +362,13 @@ export class GameScene extends Phaser.Scene {
       const entry = seq[idx];
       idx++;
 
+      // Increment card count for this player and re-render panels
+      if (this.state) {
+        const sp = this.state.players.find(p => p.id === entry.playerId);
+        if (sp) sp.cardCount = (sp.cardCount || 0) + 1;
+        this._renderPlayers(this.state.players, null);
+      }
+
       // Create a card back at deck position
       const cardBack = drawCardBack(this, deckX, deckY, 0.8);
       cardBack.setDepth(50);
@@ -328,53 +377,62 @@ export class GameScene extends Phaser.Scene {
       const playerPos = this._getPlayerPanelPos(entry.playerId);
       if (!playerPos) {
         cardBack.destroy();
-        this.time.delayedCall(100, dealNext);
+        this.time.delayedCall(150, dealNext);
         return;
       }
 
-      playDealSound();
+      playSound('card-deal');
 
       this.tweens.add({
         targets: cardBack,
         x: playerPos.x,
-        y: playerPos.y + 40,  // aim at card fan area below panel
+        y: playerPos.y + 40,
         scaleX: 0.4,
         scaleY: 0.4,
         alpha: 0,
-        duration: 250,
+        duration: 400,
         ease: 'Quad.easeOut',
         onComplete: () => {
           cardBack.destroy();
         },
       });
 
-      // Schedule next card at 300ms interval
-      this.time.delayedCall(300, dealNext);
+      // Schedule next card at 150ms interval
+      this.time.delayedCall(150, dealNext);
     };
 
     // Start after a short delay so players can see the table
-    this.time.delayedCall(500, dealNext);
+    this.time.delayedCall(800, dealNext);
   }
 
   _animateFirstCard() {
     if (!this.firstCard) return;
-    const card = drawCard(this, CX + 120, CY, this.firstCard, 1.3);
+    const offX = Phaser.Math.Between(-4, 4);
+    const offY = Phaser.Math.Between(-4, 4);
+    const rot = Phaser.Math.Between(-6, 6);
+    // Create card inside discardGroup (positioned at CX-60, CY)
+    // Deck is at CX+120 on screen → 180px right of discardGroup origin
+    const card = drawCard(this, 180, 0, this.firstCard, 1.3);
+    card.setAngle(rot);
     card.setDepth(60);
     card.setScale(0);
     card.setAlpha(0);
+    this.discardGroup.add(card);
 
-    playCardPlaySound();
+    playSound('card-deal');
 
     this.tweens.add({
       targets: card,
-      x: CX - 60,
-      y: CY,
+      x: offX,
+      y: offY,
       scaleX: 1, scaleY: 1,
       alpha: 1,
       duration: 500,
       ease: 'Back.easeOut',
       onComplete: () => {
-        card.destroy();
+        // Keep card in discard stack — don't destroy
+        this.discardStack.push(card);
+        this._lastTopCardId = this.firstCard.id;
       },
     });
   }
@@ -400,7 +458,6 @@ export class GameScene extends Phaser.Scene {
     if (state.direction !== this._currentDir) {
       this._currentDir = state.direction;
       this._orbitDir = state.direction;
-      playReverseSound();
     }
 
     this._renderDiscard(state.topCard, prevTopId);
@@ -437,7 +494,7 @@ export class GameScene extends Phaser.Scene {
 
     card.setScale(0.3);
     card.setAlpha(0);
-    playCardPlaySound();
+    playSound('card-deal');
     this.tweens.add({
       targets: card,
       scaleX: 1, scaleY: 1, alpha: 1,
@@ -691,20 +748,21 @@ export class GameScene extends Phaser.Scene {
     switch (effect.type) {
       case 'reverse':
         this._showMessage('REVERSE! ⇄');
+        playSound('revers');
         break;
       case 'skip':
         this._showMessage('SKIP! ⊘');
-        playSkipSound();
+        playSound('skip');
         break;
       case 'draw2':
         this._showMessage(`+2 DRAW! (Stack: ${effect.stack || 2})`);
         this._screenShake(5);
-        playDrawSound();
+        playSound('draw2');
         break;
       case 'wild_draw4':
         this._showMessage('+4 WILD! 💀');
         this._screenShake(10);
-        playDrawSound();
+        playSound('draw4');
         break;
       case 'wild':
         this._showMessage('WILD! 🌈');
@@ -763,12 +821,17 @@ export class GameScene extends Phaser.Scene {
     const playerPos = this._getPlayerPanelPos(playerId);
     if (!playerPos) return;
 
+    // Play draw-N-cards announcement for stacked draws
+    if (drawCount >= 2) {
+      playDrawNCards(drawCount);
+    }
+
     const count = Math.min(drawCount, 10); // cap visual cards
     for (let i = 0; i < count; i++) {
       this.time.delayedCall(i * 300, () => {
         const cardBack = drawCardBack(this, CX + 120, CY, 0.8);
         cardBack.setDepth(50);
-        playDrawSound();
+        playSound('card-deal');
 
         this.tweens.add({
           targets: cardBack,

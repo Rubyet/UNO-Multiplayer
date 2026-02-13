@@ -108,7 +108,7 @@ export class LobbyScene extends Phaser.Scene {
 
     // ── Challenge +4 toggle ──
     this.challengeEnabled = false;
-    const toggleY = 860;
+    const toggleY = 1050;
     this.toggleBg = this.add.graphics();
     this._drawToggle(cx, toggleY, false);
     this.toggleBg.setInteractive(
@@ -138,6 +138,12 @@ export class LobbyScene extends Phaser.Scene {
       }
     });
 
+    // Clean up prior socket listeners
+    socket.off('room_created');
+    socket.off('setting_changed');
+    socket.off('player_joined');
+    socket.off('game_started');
+
     socket.on('room_created', (data) => {
       if (!this.roomCode) {
         this.roomCode = data.roomCode;
@@ -149,7 +155,7 @@ export class LobbyScene extends Phaser.Scene {
       if (data.challengeEnabled !== undefined) {
         this.challengeEnabled = data.challengeEnabled;
         const cx = 1920 / 2;
-        const toggleY = 860;
+        const toggleY = 1050;
         this._drawToggle(cx, toggleY, data.challengeEnabled);
         this.challengeText.setText(`⚔️  +4 Challenge: ${data.challengeEnabled ? 'ON' : 'OFF'}`);
         this.challengeText.setColor(data.challengeEnabled ? '#2ecc71' : '#888');
